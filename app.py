@@ -1,43 +1,85 @@
+from flask import Flask, request, send_file, render_template_string
+from PyPDF2 import PdfReader, PdfWriter
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+import io
+import re
 import os
-import fitz  # PyMuPDF
-from flask import Flask, render_template, request, send_file
 
 app = Flask(__name__)
 
-@app.route("/")
+HTML_FORM = """
+<h2>Tarjador de PDF (Texto pesquisável)</h2>
+<form method="POST" enctype="multipart/form-data">
+    <label>Arquivo PDF:</label><br>
+    <input type="file" name="pdf" required><br><br>
+
+    <label>Caracteres a ignorar (separados por vírgula):</label><br>
+    <input type="text" name="ignored" value="- , / , \\ , º , : , @" style="width:300px;"><br><br>
+
+    <button type="submit">Processar</button>
+</form>
+<p>Obs: Apenas PDFs com texto pesquisável são suportados. PDFs escaneados não funcionarão.</p>
+"""
+
+# Regexs para CPF e RG
+CPF_PATTERN = re.compile(r'\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b')
+RG_PATTERN = re.compile(r'\b\d{7,9}\b')
+
+@app.route("/", methods=["GET", "POST"])
 def index():
-    return render_template("index.html")
+    if request.method == "GET":
+        return HTML_FORM
 
+    file = request.files["pdf"]
+    ignored = request.form.get("ignored", "")
+    ignored_set = set([c.strip() for c in ignored.split(",") if c.strip()])
 
-@app.route("/tarjar", methods=["POST"])
-def tarjar_pdf():
-    if "pdf" not in request.files:
-        return "Nenhum PDF enviado", 400
+    reader = PdfReader(file)
+    writer = PdfWriter()
 
-    uploaded_pdf = request.files["pdf"]
+    for page_num, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
 
-    # Railway só permite escrita em /tmp
-    input_path = "/tmp/input.pdf"
-    output_path = "/tmp/output.pdf"
+        # Overlay PDF
+        packet = io.BytesIO()
+        can = canvas.Canvas(packet, pagesize=letter)
 
-    uploaded_pdf.save(input_path)
+        # Tarjas CPF
+        for match in CPF_PATTERN.finditer(text):
+            cpf = match.group()
+            if any(c in cpf for c in ignored_set):
+                continue
+            # Exemplo fixo, ajuste conforme necessidade
+            can.setFillColorRGB(0, 0, 0)
+            can.rect(100, 700, 150, 15, fill=True, stroke=False)
 
-    # Abre PDF
-    doc = fitz.open(input_path)
+        # Tarjas RG
+        for match in RG_PATTERN.finditer(text):
+            rg = match.group()
+            if any(c in rg for c in ignored_set):
+                continue
+            can.setFillColorRGB(0, 0, 0)
+            can.rect(100, 680, 100, 15, fill=True, stroke=False)
 
-    # Exemplo de tarja simples (preta)
-    for page in doc:
-        rect = fitz.Rect(50, 50, 500, 120)  # ajuste conforme desejar
-        page.draw_rect(rect, color=(0, 0, 0), fill=(0, 0, 0))
+        can.save()
+        packet.seek(0)
 
-    # Salva PDF final
-    doc.save(output_path)
-    doc.close()
+        overlay = PdfReader(packet)
+        page.merge_page(overlay.pages[0])
+        writer.add_page(page)
 
-    # Retorna o PDF ao usuário
-    return send_file(output_path, as_attachment=True, download_name="tarjado.pdf")
+    output = io.BytesIO()
+    writer.write(output)
+    output.seek(0)
 
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="tarjado.pdf",
+        mimetype="application/pdf"
+    )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False)
