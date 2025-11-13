@@ -1,18 +1,17 @@
-FROM python:3.10-slim
+# Use imagem oficial Python
+FROM python:3.11-slim
 
-# Instala dependências do sistema
-RUN apt-get update && apt-get install -y \
-    poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
-
+# Configura diretório de trabalho
 WORKDIR /app
 
-COPY requirements.txt .
+# Copia arquivos necessários
+COPY app.py requirements.txt ./
 
+# Instala dependências
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Expõe porta do Flask
+EXPOSE 8080
 
-ENV PORT=8080
-
-CMD ["python", "app.py"]
+# Comando de inicialização para Railway
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "app:app"]
