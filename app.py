@@ -1,110 +1,80 @@
-import re
-from io import BytesIO
 from flask import Flask, request, send_file, render_template_string
-from pdf2image import convert_from_path
-from PIL import Image, ImageDraw
-import pytesseract
 import os
+import fitz
+import io
+from PIL import Image, ImageDraw
+import re
 
 app = Flask(__name__)
 
-# Tesseract no Railway será encontrado normalmente
-pytesseract.pytesseract.tesseract_cmd = "tesseract"
+HTML_FORM = """
+<h2>Tarjador de PDF</h2>
+<form method="POST" enctype="multipart/form-data">
+    <label>Arquivo PDF:</label><br>
+    <input type="file" name="pdf" required><br><br>
 
-CPF_REGEX = re.compile(r'\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b')
-RG_REGEX = re.compile(r'\b([A-Z]{2}-)?\d{1,2}\.?\d{3}\.?\d{3}-?\d?\b', re.IGNORECASE)
+    <label>Caracteres ignorados (separados por vírgula):</label><br>
+    <input type="text" name="ignored" value="-, /, \\, º, :, @" style="width:300px;"><br><br>
 
-def apenas_digitos(s: str) -> str:
-    return re.sub(r'\D', '', s or '')
-
-def aplicar_tarjas_na_imagem(img: Image.Image, ignorar_chars: str) -> Image.Image:
-    draw = ImageDraw.Draw(img)
-
-    try:
-        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, lang='por')
-    except Exception:
-        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-
-    n_boxes = len(data['level'])
-
-    for i in range(n_boxes):
-        text = (data['text'][i] or "").strip()
-        if not text:
-            continue
-
-        if any(ch in text for ch in ignorar_chars):
-            continue
-
-        norm = apenas_digitos(text)
-        if not norm.isdigit():
-            continue
-
-        is_cpf = len(norm) == 11
-        is_rg = 7 <= len(norm) <= 9
-
-        if is_cpf or is_rg:
-            x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-            margem_x = int(w * 0.10)
-            margem_y = int(h * 0.25)
-            box = [x - margem_x, y - margem_y, x + w + margem_x, y + h + margem_y]
-            draw.rectangle(box, fill="black")
-
-    return img
+    <button type="submit">Processar</button>
+</form>
+"""
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    html = """
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <title>Tarjador LGPD</title>
-    </head>
-    <body style="font-family: Arial; padding: 30px;">
-      <h2>Tarjador de CPF / RG (LGPD)</h2>
-      <form method="post" enctype="multipart/form-data">
-        <p>Selecione um PDF:</p>
-        <input type="file" name="file" required><br><br>
+    if request.method == "GET":
+        return HTML_FORM
 
-        <p>Caracteres a ignorar:</p>
-        <input type="text" name="ignorar" value="-,/\\º:@"><br><br>
+    file = request.files["pdf"]
+    ignored = request.form.get("ignored", "")
+    ignored_set = set([c.strip() for c in ignored.split(",") if c.strip()])
 
-        <button type="submit">Processar</button>
-      </form>
-    </body>
-    </html>
-    """
+    pdf_bytes = file.read()
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    output_pdf = fitz.open()
 
-    if request.method == "POST":
-        arquivo = request.files.get("file")
-        if not arquivo:
-            return "Nenhum arquivo enviado", 400
+    total_trejados = 0
 
-        ignorar_chars = request.form.get("ignorar", "-,/\\º:@")
+    patterns = [
+        r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b",
+        r"\b\d{2}\.\d{3}\.\d{3}-\d{1}\b",
+        r"\b\d{7,9}\b"
+    ]
 
-        temp_input = "input.pdf"
-        arquivo.save(temp_input)
+    for page_num in range(len(doc)):
+        page = doc.load_page(page_num)
+        pix = page.get_pixmap()
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
 
-        try:
-            images = convert_from_path(temp_input, dpi=300)
-        except Exception as e:
-            return f"Erro ao converter PDF: {e}", 500
+        text = page.get_text("text")
 
-        output_images = []
-        for img in images:
-            img_rgb = img.convert("RGB")
-            img_proc = aplicar_tarjas_na_imagem(img_rgb, ignorar_chars)
-            output_images.append(img_proc)
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                encontrado = match.group()
 
-        buffer = BytesIO()
-        output_images[0].save(buffer, format="PDF", save_all=True, append_images=output_images[1:])
-        buffer.seek(0)
+                if any(ch in encontrado for ch in ignored_set):
+                    continue
 
-        os.remove(temp_input)
+                for rect in page.search_for(encontrado):
+                    total_trejados += 1
+                    draw = ImageDraw.Draw(img)
+                    draw.rectangle([(rect.x0, rect.y0), (rect.x1, rect.y1)], fill="black")
 
-        return send_file(buffer, download_name="tarjado.pdf", as_attachment=True)
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format="PDF")
+        temp_doc = fitz.open("pdf", img_bytes.getvalue())
+        output_pdf.insert_pdf(temp_doc)
 
-    return render_template_string(html)
+    output_buffer = io.BytesIO()
+    output_pdf.save(output_buffer)
+
+    return send_file(
+        io.BytesIO(output_buffer.getvalue()),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name="tarjado.pdf"
+    )
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 8080))  # IMPORTANTE PARA O RAILWAY
+    app.run(host="0.0.0.0", port=port)
