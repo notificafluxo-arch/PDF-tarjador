@@ -2,4 +2,4 @@ Flask
 PyMuPDF
 Pillow
 gunicorn
-
+python-dotenv
