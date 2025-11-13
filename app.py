@@ -1,75 +1,42 @@
-from flask import Flask, request, send_file
-import fitz
-import io
-import re
+import os
+import fitz  # PyMuPDF
+from flask import Flask, render_template, request, send_file
 
 app = Flask(__name__)
 
-HTML_FORM = """
-<h2>Tarjador de PDF</h2>
-<form method="POST" enctype="multipart/form-data">
-    <label>Arquivo PDF:</label><br>
-    <input type="file" name="pdf" required><br><br>
-
-    <label>Caracteres ignorados (separados por vírgula):</label><br>
-    <input type="text" name="ignored" value="-, /, \\, º, :, @" style="width:300px;"><br><br>
-
-    <button type="submit">Processar</button>
-</form>
-"""
-
-@app.route("/", methods=["GET", "POST"])
+@app.route("/")
 def index():
-    if request.method == "GET":
-        return HTML_FORM
+    return render_template("index.html")
 
-    file = request.files["pdf"]
-    ignored = request.form.get("ignored", "")
-    ignored_set = set([c.strip() for c in ignored.split(",") if c.strip()])
 
-    # Carrega PDF
-    pdf_bytes = file.read()
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+@app.route("/tarjar", methods=["POST"])
+def tarjar_pdf():
+    if "pdf" not in request.files:
+        return "Nenhum PDF enviado", 400
 
-    total_trejados = 0
+    uploaded_pdf = request.files["pdf"]
 
-    # Regex CPF e RG
-    patterns = [
-        r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b",   # CPF
-        r"\b\d{2}\.\d{3}\.\d{3}-\d{1}\b",   # RG com pontos
-        r"\b\d{7,9}\b"                      # RG simples
-    ]
+    # Railway só permite escrita em /tmp
+    input_path = "/tmp/input.pdf"
+    output_path = "/tmp/output.pdf"
 
+    uploaded_pdf.save(input_path)
+
+    # Abre PDF
+    doc = fitz.open(input_path)
+
+    # Exemplo de tarja simples (preta)
     for page in doc:
-        text = page.get_text("text")
+        rect = fitz.Rect(50, 50, 500, 120)  # ajuste conforme desejar
+        page.draw_rect(rect, color=(0, 0, 0), fill=(0, 0, 0))
 
-        for pattern in patterns:
-            for match in re.finditer(pattern, text):
-                encontrado = match.group()
+    # Salva PDF final
+    doc.save(output_path)
+    doc.close()
 
-                # ignorar se tiver caractere proibido
-                if any(ch in encontrado for ch in ignored_set):
-                    continue
+    # Retorna o PDF ao usuário
+    return send_file(output_path, as_attachment=True, download_name="tarjado.pdf")
 
-                # encontra coordenadas do texto
-                areas = page.search_for(encontrado)
-
-                for rect in areas:
-                    total_trejados += 1
-                    # desenha tarja preta
-                    page.add_rect_annot(rect).update()
-
-    # salva PDF final
-    output = io.BytesIO()
-    doc.save(output)
-    output.seek(0)
-
-    return send_file(
-        output,
-        mimetype="application/pdf",
-        as_attachment=True,
-        download_name="tarjado.pdf"
-    )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
