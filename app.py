@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, render_template_string
+from flask import Flask, request, send_file
 import os
 import fitz
 import io
@@ -25,20 +25,26 @@ def index():
     if request.method == "GET":
         return HTML_FORM
 
-    file = request.files["pdf"]
+    # arquivo enviado
+    file = request.files.get("pdf")
+    if not file:
+        return "Nenhum PDF enviado."
+
     ignored = request.form.get("ignored", "")
     ignored_set = set([c.strip() for c in ignored.split(",") if c.strip()])
 
+    # abre PDF enviado
     pdf_bytes = file.read()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     output_pdf = fitz.open()
 
     total_trejados = 0
 
+    # padrões de números sigilosos
     patterns = [
-        r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b",
-        r"\b\d{2}\.\d{3}\.\d{3}-\d{1}\b",
-        r"\b\d{7,9}\b"
+        r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b",  # CPF
+        r"\b\d{2}\.\d{3}\.\d{3}-\d{1}\b",  # RG
+        r"\b\d{7,9}\b"                     # números diversos
     ]
 
     for page_num in range(len(doc)):
@@ -52,6 +58,7 @@ def index():
             for match in re.finditer(pattern, text):
                 encontrado = match.group()
 
+                # ignora caracteres selecionados
                 if any(ch in encontrado for ch in ignored_set):
                     continue
 
@@ -60,11 +67,13 @@ def index():
                     draw = ImageDraw.Draw(img)
                     draw.rectangle([(rect.x0, rect.y0), (rect.x1, rect.y1)], fill="black")
 
+        # transforma imagem em página PDF
         img_bytes = io.BytesIO()
         img.save(img_bytes, format="PDF")
         temp_doc = fitz.open("pdf", img_bytes.getvalue())
         output_pdf.insert_pdf(temp_doc)
 
+    # saída final
     output_buffer = io.BytesIO()
     output_pdf.save(output_buffer)
 
@@ -75,10 +84,14 @@ def index():
         download_name="tarjado.pdf"
     )
 
+# --------------------------
+# EXECUÇÃO LOCAL OU RAILWAY
+# --------------------------
+
 if __name__ == "__main__":
-    app.run(debug=False)
-
+    port = int(os.environ.get("PORT", 8080))  # Railway usa a variável PORT
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False
     )
-
-
-
